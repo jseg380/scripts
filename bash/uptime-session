@@ -1,0 +1,130 @@
+#!/bin/bash
+#
+# File: /etc/uptime-session
+#
+
+# Files variables declaration
+uptime_file="/home/juanma/.uptime.log"
+suspend_file="/tmp/suspend.tmp"
+total_suspend_file="/tmp/total_suspend.tmp"
+start_session="/tmp/start_session.tmp"
+
+# Name of the program
+re="([^/\d]+)[^/]*$"
+[[ $0 =~ $re ]]
+name=${BASH_REMATCH[1]}
+
+
+# Functions
+function show_time() {
+  if [ $# == 1 ]; then
+    printf "$(date -d @$1 +'%_H h, %_M min')"
+  elif [ $# == 2 ] && [ $1 == "-u" ]; then
+    printf "$(date -u -d @$2 +'%_H h, %_M min')"
+  elif [ $# == 2 ]; then
+    printf "$(date -d @$1 +%H:%M) - $(date -d @$2 +%H:%M)"
+  fi
+}
+
+
+# Arguments verification
+if [ $# != 1 ]; then 
+  printf "Error. 1 argument expected, instead $# were received.\n"
+  printf "Try '$name --help' for more information\n"
+  exit 1
+fi
+
+# Program help
+if [ $# == 1 ] && ([ $1 == "--help" ] || [ $1 == "-h" ]);then
+  # TO DO: WRITE HELP
+  printf "This program takes 1 argument. Available options:\n"
+  printf "  shutdown  TO DO\n"
+  printf "  suspend   TO DO\n"
+  printf "  resume    TO DO\n"
+  exit 0
+fi
+
+
+
+# Shutdown
+if [ $# == 1 ] && [ $1 == "shutdown" ]; then
+  # Command to get uptime formatted this way obtained here: https://stackoverflow.com/a/28353785
+  # Unused after changing it so that everything is dependent on the time in seconds since the EPOCH
+  
+  today=$(date +%d/%m/%Y)
+
+  # Write today's date if it's not written in the uptime file
+  if test -e $uptime_file; then
+    last_modification=$(date -r $uptime_file +%d/%m/%Y)
+
+    if [ $last_modification != $today ]; then
+      printf "\n\n$today\n" >> $uptime_file
+    fi
+  else
+
+    printf "$today\n" > $uptime_file
+  fi 
+ 
+  # Unless indicated otherwise, all the times are in seconds since the EPOCH
+  
+  declare -i total_suspended_time=0
+  # Calculate total time suspended
+  if test -f $total_suspend_file; then
+    for i in $(cat $total_suspend_file); do
+      total_suspended_time=$((time + i))
+    done
+  fi
+
+  current_time=$(date +%s)
+
+  start_time=$(cat $start_session)
+
+  total_uptime=$(( $(date +%s) - start_time ))
+
+  real_uptime=$(( total_uptime - total_suspended_time ))
+
+  #ratio=$(bc <<< "scale=2; ($total_suspended_time * 100) / $total_uptime")
+  ratio=$(python -c "a='{:05.2f}'.format(($total_suspended_time*100)/$total_uptime); print(f'{a}')")
+
+  printf "Session uptime:   $(show_time -u $total_uptime)  ($(show_time $start_time $current_time))\n" >> $uptime_file
+  printf "  Suspended time: $(show_time -u $total_suspended_time)\n" >> $uptime_file
+  printf "  Suspend/uptime:  $ratio %%\n" >> $uptime_file
+  printf "  Real uptime   : $(show_time -u $real_uptime)\n" >> $uptime_file
+
+
+  # Delete the file with the total suspended time
+  rm -fr $total_suspend_file
+  
+  exit 0
+fi
+
+
+# Suspension
+
+# Suspend
+if [ $# == 1 ] && [ $1 == "suspend" ]; then
+  # Before suspending create a file with the current time in seconds since EPOCH
+  printf "$(date +%s)" > $suspend_file
+  
+  exit 0
+fi
+
+# Resume
+if [ $# == 1 ] && [ $1 == "resume" ]; then
+  # After suspending compare times and record the time spent suspended
+  t0=$(cat $suspend_file)  # Time the computer was suspended
+  t1=$(date +%s)           # Time the computer was waken up
+  time=$((t1 - t0))
+  
+  printf "\n$time" >> $total_suspend_file
+  
+  # Delete the file with the last suspended time 
+  rm $suspend_file
+
+  exit 0
+fi
+
+# If it has reached this point it means the argument is not a valid one
+printf "Error. Argument '$1' is not valid.\n"
+printf "Try '$name --help' for more information.\n"
+exit 1

@@ -1,0 +1,54 @@
+#!/bin/bash
+
+
+# Ayuda sobre el script
+
+if [ $# == 1 ] && [ $1 == '-h' ]; then
+	echo
+	printf "Uso:\n$0 <directorio> <patron_a_sustituir> <patron_nuevo>"
+	printf "\nUtilice \'\' para que elimine el patrón"
+	echo
+	exit 0
+fi
+
+# Comprobación del número de argumentos
+
+if [ $# != 3 ]; then
+	echo
+	printf "Error. Se esperaban 3 argumentos, para más información utilize\n\
+$0 -h"
+	echo
+	exit 1
+fi
+
+# Comprobación de la validez de los argumentos
+
+if ! test -d $1; then
+	echo
+	printf "$1 no es un directorio válido. Para más información consulte la \
+ayuda con \'-h\':\n$0 -h"
+	echo
+	exit 1
+fi
+
+
+
+# Código del script
+
+ls $1 | grep -- "$2" > $1/tmp
+
+
+while IFS='' read -r linea
+do
+	echo
+	# echo "Original: $linea"
+	nueva=${linea//$2/$3}
+	mv -v "$linea" "$nueva"
+	# echo "Modificada: $nueva"
+	echo
+done < $1/tmp
+
+
+rm $1/tmp
+
+

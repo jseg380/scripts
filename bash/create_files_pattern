@@ -1,0 +1,83 @@
+#!/usr/bin/env sh
+
+
+function print_help ()
+{
+cat << EOF
+Usage:
+  create_files_pattern [-h] <amount> <directory> <name>
+
+Options.
+  -h, --help  Print this help
+
+Arguments:
+  amount      amount of files to create
+  directory   directory in which to create the files
+  name        name base of files, format will be 'name_number''
+EOF
+exit 0
+}
+
+function parse_args ()
+{
+  while [ $# -gt 0 ]
+  do
+    case "$1"
+    in
+    -h|--help)
+      print_help
+    esac
+  done
+
+  if [ $# -ne 3 ]
+  then
+    printf 
+  fi
+}
+
+# Script help
+if [ $# == 1 ] && ([ $1 == "-h" ] || [ $1 == "--help" ])
+then
+	echo
+	printf "Introduce 3 argumentos. Uso:\n$0 <cantidad_archivos> <directorio> \
+<nombre_inicio> <patron>"
+	echo
+	exit 0
+fi
+
+# Comprobación del número de argumentos
+
+if [ $# != 3 ]
+then
+	echo
+	printf "Error. Se esperaban 3 argumentos. Para más información vea:\n$0 -h"
+	echo
+	exit 1
+fi
+
+# Comprobación de la validez de los argumentos
+
+if ! test -d $2; then
+	echo
+	printf "$2 no es un directorio válido. Para más información consulte la \
+ayuda con \'-h\':\n$0 -h"
+	echo
+	exit 1
+fi
+
+
+
+# Se declara una variable de tipo entero que funciona como contador
+
+declare -i contador=1
+
+for i in $(seq 1 1 $1)
+do
+	nombre="$3_$contador"
+	echo
+	echo "Creando archivo $nombre en $2"
+	touch $2/$nombre
+	echo "Archivo $nombre creado en $2"
+	echo
+	contador=$contador+1
+done
