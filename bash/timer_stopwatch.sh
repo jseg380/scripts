@@ -1,56 +1,80 @@
 #!/usr/bin/env bash
 # timer_stopwatch.sh
-# Usage: ./timer_stopwatch.sh timer HH:MM:SS.mmm
+# Usage: ./timer_stopwatch.sh timer HH:MM:SS(.mmm)
 #        ./timer_stopwatch.sh stopwatch
 # Controls (while running):
-#  Space = pause/resume
-#  l     = lap (stopwatch only)
-#  s or Enter = stop (finish)
-#  q     = quit immediately
+#  Space     = pause/resume
+#  l         = lap (stopwatch only)
+#  s / Enter = stop
+#  q         = quit immediately
 
 set -euo pipefail
 
-# format milliseconds to HH:MM:SS.mmm
-fmt() {
-  local ms=$1
-  local total_ms=$ms
-  local hrs=$(( total_ms/3600000 )); total_ms=$(( total_ms%3600000 ))
-  local mins=$(( total_ms/60000 )); total_ms=$(( total_ms%60000 ))
-  local secs=$(( total_ms/1000 )); local msecs=$(( total_ms%1000 ))
-  printf "%02d:%02d:%02d.%03d" "$hrs" "$mins" "$secs" "$msecs"
+# ---------------------------------------------------------------------------
+# format_milliseconds: converts a raw millisecond count into HH:MM:SS.mmm
+# ---------------------------------------------------------------------------
+format_milliseconds() {
+  local total_milliseconds=$1
+
+  local hours=$(( total_milliseconds / 3600000 ))
+  total_milliseconds=$(( total_milliseconds % 3600000 ))
+
+  local minutes=$(( total_milliseconds / 60000 ))
+  total_milliseconds=$(( total_milliseconds % 60000 ))
+
+  local seconds=$(( total_milliseconds / 1000 ))
+  local milliseconds=$(( total_milliseconds % 1000 ))
+
+  printf "%02d:%02d:%02d.%03d" "$hours" "$minutes" "$seconds" "$milliseconds"
 }
 
-# read single key (non-blocking if timeout provided)
-read_key() {
-  local timeout=${1:-0.0}
+# ---------------------------------------------------------------------------
+# read_single_key: reads one keypress with an optional timeout (in seconds).
+# Also handles escape sequences so arrow keys don't bleed into input.
+# ---------------------------------------------------------------------------
+read_single_key() {
+  local timeout=${1:-0.05}
+  local key=""
   IFS= read -rsn1 -t "$timeout" key 2>/dev/null || key=""
-  # handle escape sequences (arrow keys)
+
+  # If we got an escape character, try to read the rest of the sequence
   if [[ $key == $'\e' ]]; then
-    IFS= read -rsn2 -t 0.001 seq 2>/dev/null || seq=""
-    key+="$seq"
+    local escape_sequence=""
+    IFS= read -rsn2 -t 0.001 escape_sequence 2>/dev/null || escape_sequence=""
+    key+="$escape_sequence"
   fi
+
   printf '%s' "$key"
 }
 
-# parse timer arg HH:MM:SS(.mmm optional)
-parse_time_arg() {
-  local arg=$1
-  # Accept HH:MM:SS or H:M:S.mmm
-  if [[ $arg =~ ^([0-9]+):([0-5]?[0-9]):([0-5]?[0-9])(\.([0-9]{1,3}))?$ ]]; then
-    local h=${BASH_REMATCH[1]}
-    local m=${BASH_REMATCH[2]}
-    local s=${BASH_REMATCH[3]}
-    local ms=${BASH_REMATCH[5]:-0}
-    # normalize milliseconds to 3 digits
-    while [ ${#ms} -lt 3 ]; do ms="${ms}0"; done
-    echo $(( (h*3600 + m*60 + s)*1000 + ms ))
+# ---------------------------------------------------------------------------
+# parse_time_argument: converts HH:MM:SS(.mmm) to total milliseconds.
+# Prints "invalid" if the format doesn't match.
+# ---------------------------------------------------------------------------
+parse_time_argument() {
+  local time_string=$1
+
+  if [[ $time_string =~ ^([0-9]+):([0-5]?[0-9]):([0-5]?[0-9])(\.([0-9]{1,3}))?$ ]]; then
+    local hours=${BASH_REMATCH[1]}
+    local minutes=${BASH_REMATCH[2]}
+    local seconds=${BASH_REMATCH[3]}
+    local milliseconds=${BASH_REMATCH[5]:-0}
+
+    # Pad milliseconds to 3 digits (e.g. ".5" → "500", ".05" → "050")
+    while [ ${#milliseconds} -lt 3 ]; do
+      milliseconds="${milliseconds}0"
+    done
+
+    echo $(( (hours * 3600 + minutes * 60 + seconds) * 1000 + milliseconds ))
   else
-    echo "invalid" 
+    echo "invalid"
   fi
 }
 
-# draw help line
-controls_line() {
+# ---------------------------------------------------------------------------
+# print_controls: shows the available keys for the current mode
+# ---------------------------------------------------------------------------
+print_controls() {
   if [ "$MODE" = "timer" ]; then
     printf "Space=Pause/Resume  Enter/s=Stop  q=Quit\n"
   else
@@ -58,64 +82,69 @@ controls_line() {
   fi
 }
 
-# main loop
+# ===========================================================================
+# TIMER MODE
+# ===========================================================================
 if [ "${1:-}" = "timer" ]; then
   MODE=timer
+
   if [ -z "${2:-}" ]; then
     echo "Usage: $0 timer HH:MM:SS(.mmm)"
     exit 1
   fi
-  total_ms=$(parse_time_arg "$2")
-  if [ "$total_ms" = "invalid" ]; then
+
+  target_milliseconds=$(parse_time_argument "$2")
+  if [ "$target_milliseconds" = "invalid" ]; then
     echo "Invalid time format. Use HH:MM:SS(.mmm)"
     exit 1
   fi
-  remaining_ms=$total_ms
-  start_ms=$(date +%s%3N)
-  paused=0
-  laps=()
+
+  remaining_milliseconds=$target_milliseconds
+  timer_start_ms=$(date +%s%3N)
+  is_paused=0
+  pause_started_at_ms=0   # initialized to avoid "unbound variable" if accessed early
+
   echo
-  controls_line
+  print_controls
   printf "\n"
-  # terminal raw for key reads
+
+  # Put the terminal in raw mode so we can read keypresses instantly
   stty -echo -icanon time 0 min 0
   trap 'stty sane; printf "\n"; exit' INT TERM
-  last_draw=""
+
+  last_displayed=""
+
   while true; do
-    key=$(read_key 0.05)
-    now_ms=$(date +%s%3N)
-    if [ "$paused" -eq 0 ]; then
-      elapsed=$(( now_ms - start_ms ))
-      remaining_ms=$(( total_ms - elapsed ))
-      if [ $remaining_ms -le 0 ]; then
-        remaining_ms=0
+    pressed_key=$(read_single_key 0.05)
+    current_time_ms=$(date +%s%3N)
+
+    if [ "$is_paused" -eq 0 ]; then
+      elapsed_ms=$(( current_time_ms - timer_start_ms ))
+      remaining_milliseconds=$(( target_milliseconds - elapsed_ms ))
+      if [ "$remaining_milliseconds" -lt 0 ]; then
+        remaining_milliseconds=0
       fi
     fi
 
-    # key handling
-    if [ -n "$key" ]; then
-      case "$key" in
-        " ") # pause/resume
-          if [ "$paused" -eq 0 ]; then
-            paused=1
-            pause_at=$(date +%s%3N)
+    # Handle keypresses
+    if [ -n "$pressed_key" ]; then
+      case "$pressed_key" in
+        " ")
+          if [ "$is_paused" -eq 0 ]; then
+            is_paused=1
+            pause_started_at_ms=$(date +%s%3N)
           else
-            paused=0
-            # shift start_ms forward by paused duration
-            resume_at=$(date +%s%3N)
-            pause_dur=$(( resume_at - pause_at ))
-            start_ms=$(( start_ms + pause_dur ))
+            is_paused=0
+            # Shift the start reference forward by however long we were paused,
+            # so elapsed time calculation stays correct after resuming
+            local_now_ms=$(date +%s%3N)
+            pause_duration_ms=$(( local_now_ms - pause_started_at_ms ))
+            timer_start_ms=$(( timer_start_ms + pause_duration_ms ))
           fi
           ;;
-        $'\n'|"s") # stop/finish
-          if [ "$paused" -eq 0 ]; then
-            now_ms=$(date +%s%3N)
-            elapsed=$(( now_ms - start_ms ))
-            remaining_ms=$(( total_ms - elapsed ))
-            if [ $remaining_ms -lt 0 ]; then remaining_ms=0; fi
-          fi
+        $'\n' | "s")
           stty sane
-          printf "\rRemaining: %s\n" "$(fmt $remaining_ms)"
+          printf "\rRemaining: %s\n" "$(format_milliseconds "$remaining_milliseconds")"
           exit 0
           ;;
         "q")
@@ -126,93 +155,104 @@ if [ "${1:-}" = "timer" ]; then
       esac
     fi
 
-    # update display
-    disp="Remaining: $(fmt $remaining_ms)"
-    if [ "$paused" -eq 1 ]; then
-      pad=" [PAUSED]"
-      disp="$disp$pad"
+    # Build the display string
+    display_line="Remaining: $(format_milliseconds "$remaining_milliseconds")"
+    if [ "$is_paused" -eq 1 ]; then
+      display_line="$display_line [PAUSED]"
     fi
 
-    # only redraw if changed
-    if [ "$disp" != "$last_draw" ]; then
-      printf "\r\033[K%s" "$disp"
-      last_draw="$disp"
+    # Only redraw when something changed to avoid flicker
+    if [ "$display_line" != "$last_displayed" ]; then
+      printf "\r\033[K%s" "$display_line"
+      last_displayed="$display_line"
     fi
 
-    if [ $remaining_ms -le 0 ]; then
+    # Time's up
+    if [ "$remaining_milliseconds" -le 0 ]; then
       stty sane
       printf "\nTime's up!\n"
 
-      # play in an infinite loop in background
+      # Start the alarm in a background loop
       (
-        while :; do
+        while true; do
           paplay /usr/share/sounds/freedesktop/stereo/alarm-clock-elapsed.oga
-          sleep 0.1
         done
       ) &
-      _ALARM_PID=$!
+      alarm_pid=$!
 
-      # Re-set the trap NOW that we know $_ALARM_PID, so Ctrl+C cleans up
-      trap 'kill "$_ALARM_PID" 2>/dev/null; wait "$_ALARM_PID" 2>/dev/null; printf "\n"; exit' INT TERM
+      # Now that we have the PID, set a trap so Ctrl+C also kills the alarm
+      trap 'kill "$alarm_pid" 2>/dev/null; wait "$alarm_pid" 2>/dev/null; printf "\n"; exit' INT TERM
 
-      # wait for a single key press to stop the alarm
       read -n1 -s -r -p "Press any key to stop the alarm..."
-      kill "$_ALARM_PID" 2>/dev/null
-      wait "$_ALARM_PID" 2>/dev/null
+
+      kill "$alarm_pid" 2>/dev/null
+      wait "$alarm_pid" 2>/dev/null
 
       exit 0
     fi
   done
 
+# ===========================================================================
+# STOPWATCH MODE
+# ===========================================================================
 elif [ "${1:-}" = "stopwatch" ]; then
   MODE=stopwatch
-  start_ms=$(date +%s%3N)
-  paused=0
+
+  stopwatch_start_ms=$(date +%s%3N)
+  is_paused=0
+  pause_started_at_ms=0
   lap_count=0
-  laps=()
+  lap_times=()
+
   echo
-  controls_line
+  print_controls
   printf "\n"
+
   stty -echo -icanon time 0 min 0
   trap 'stty sane; printf "\n"; exit' INT TERM
-  last_draw=""
+
+  last_displayed=""
+
   while true; do
-    key=$(read_key 0.05)
-    now_ms=$(date +%s%3N)
-    if [ "$paused" -eq 0 ]; then
-      elapsed=$(( now_ms - start_ms ))
+    pressed_key=$(read_single_key 0.05)
+    current_time_ms=$(date +%s%3N)
+
+    if [ "$is_paused" -eq 0 ]; then
+      elapsed_ms=$(( current_time_ms - stopwatch_start_ms ))
     else
-      elapsed=$(( pause_at - start_ms ))
+      # While paused, freeze elapsed at the moment we paused
+      elapsed_ms=$(( pause_started_at_ms - stopwatch_start_ms ))
     fi
 
-    # key handling
-    if [ -n "$key" ]; then
-      case "$key" in
-        " ") # pause/resume
-          if [ "$paused" -eq 0 ]; then
-            paused=1
-            pause_at=$(date +%s%3N)
+    # Handle keypresses
+    if [ -n "$pressed_key" ]; then
+      case "$pressed_key" in
+        " ")
+          if [ "$is_paused" -eq 0 ]; then
+            is_paused=1
+            pause_started_at_ms=$(date +%s%3N)
           else
-            paused=0
-            resume_at=$(date +%s%3N)
-            pause_dur=$(( resume_at - pause_at ))
-            start_ms=$(( start_ms + pause_dur ))
+            is_paused=0
+            local_now_ms=$(date +%s%3N)
+            pause_duration_ms=$(( local_now_ms - pause_started_at_ms ))
+            stopwatch_start_ms=$(( stopwatch_start_ms + pause_duration_ms ))
           fi
           ;;
-        "l") # lap
-          lap_time=$elapsed
-          lap_count=$((lap_count+1))
-          laps+=("Lap $lap_count: $(fmt $lap_time)")
-          # print lap line on next line
-          printf "\n%s\n" "${laps[-1]}"
-          last_draw="" # force redraw of main line
+        "l")
+          lap_count=$(( lap_count + 1 ))
+          lap_label="Lap $lap_count: $(format_milliseconds "$elapsed_ms")"
+          lap_times+=("$lap_label")
+          printf "\n%s\n" "$lap_label"
+          last_displayed=""   # force the main line to redraw cleanly after the lap line
           ;;
-        $'\n'|"s") # stop
+        $'\n' | "s")
           stty sane
-          printf "\nFinal: %s\n" "$(fmt $elapsed)"
-          if [ ${#laps[@]} -gt 0 ]; then
+          printf "\nFinal: %s\n" "$(format_milliseconds "$elapsed_ms")"
+          if [ "${#lap_times[@]}" -gt 0 ]; then
             printf "Laps:\n"
-            for l in "${laps[@]}"; do printf "%s\n" "$l"; done
+            for lap_entry in "${lap_times[@]}"; do
+              printf "  %s\n" "$lap_entry"
+            done
           fi
           exit 0
           ;;
@@ -224,28 +264,31 @@ elif [ "${1:-}" = "stopwatch" ]; then
       esac
     fi
 
-    disp="Elapsed: $(fmt $elapsed)"
-    if [ "$paused" -eq 1 ]; then
-      disp="$disp [PAUSED]"
+    display_line="Elapsed: $(format_milliseconds "$elapsed_ms")"
+    if [ "$is_paused" -eq 1 ]; then
+      display_line="$display_line [PAUSED]"
     fi
 
-    if [ "$disp" != "$last_draw" ]; then
-      printf "\r\033[K%s" "$disp"
-      last_draw="$disp"
+    if [ "$display_line" != "$last_displayed" ]; then
+      printf "\r\033[K%s" "$display_line"
+      last_displayed="$display_line"
     fi
   done
 
+# ===========================================================================
+# USAGE / UNKNOWN MODE
+# ===========================================================================
 else
   cat <<EOF
 Usage:
-  $0 timer HH:MM:SS(.mmm)   # run countdown timer
-  $0 stopwatch              # run stopwatch
+  $0 timer HH:MM:SS(.mmm)   run a countdown timer
+  $0 stopwatch               run a stopwatch
 
 Controls while running:
-  Space = pause/resume
-  l     = lap (stopwatch only)
-  Enter or s = stop/finish
-  q     = quit immediately
+  Space     = pause/resume
+  l         = lap (stopwatch only)
+  Enter / s = stop
+  q         = quit immediately
 EOF
   exit 1
 fi
